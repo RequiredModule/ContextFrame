@@ -1,0 +1,263 @@
+local connectMaster = require(script.ConnectMaster)
+local tweenService = game:GetService("TweenService")
+local UIHandler = {}
+local contextFunc = {}
+UIHandler.Context = {}
+UIHandler.__index = UIHandler
+contextFunc.__index = contextFunc
+
+local framePositions = {
+	"closed",
+	"open",
+	"opening",
+	"closing",
+}
+
+function UIHandler.NewContext(name)
+	if not UIHandler.Context[name] then
+		local newEnv = {}
+		newEnv.Frames = {}
+		newEnv.DefaultOpen = {}
+		setmetatable(newEnv, UIHandler)
+		UIHandler.Context[name] = newEnv
+		setmetatable(newEnv, UIHandler)
+		return newEnv
+	else
+		warn("Context name is not original")
+		return
+	end
+end
+
+function UIHandler:GetContext(name)
+	return UIHandler.Context[name]
+end
+
+function UIHandler:GetContextFromInstance(frame)
+	for contextName, contextObj in pairs(UIHandler.Context) do
+		if contextObj.Frames[frame] then
+			return contextObj
+		end
+	end
+	return
+end
+
+function UIHandler:GetContextFrameFromInstance(frame)
+	for contextName, contextObj in pairs(UIHandler.Context) do
+		local contextFrame = contextObj.Frames[frame]
+		if contextFrame then
+			return contextFrame
+		end
+	end
+	return
+end
+
+function UIHandler:AddDefault(frame)
+	local foundFrame = self.Frames[frame]
+	if foundFrame then
+		table.insert(self.DefaultOpen, foundFrame)
+		return true
+	end
+	warn("Attempt to add frame out of context")
+	return
+end
+
+function UIHandler:RemoveDefault(frame)
+	local foundFrame = self.Frames[frame]
+	if foundFrame then
+		local foundDefault = table.find(self.DefaultOpen, foundFrame)
+		if foundDefault then
+			table.remove(self.DefaultOpen, foundDefault)
+		else
+			return false
+		end
+	else
+		warn("Frame is not in context")
+		return
+	end
+end
+
+function UIHandler:CloseAll(ignoreDefault)
+	for index, object in pairs(self.Frames) do
+		if not table.find(self.DefaultOpen, object) or ignoreDefault then
+			print("Closing", object.Object)
+			object:Close()
+		elseif not ignoreDefault and (self.FrameStatus ~= "open" or self.FrameStatus ~= "opening") then
+			print("Open", object.Object)
+			object:Open()
+		end
+	end
+end
+
+function UIHandler:AddToContext(frame, openPos, startPos)
+	if not self.Frames[frame] then
+		local proxy = {}
+		if startPos then
+			startPos = string.lower(startPos)
+		end
+		if startPos and not table.find(framePositions, startPos) then
+			warn("invalid start position, default has been set")
+			startPos = "closed"
+		end
+		
+		--Data set--
+		proxy.FrameStatus = startPos or "closed"
+		proxy.Context = self
+		proxy.connectionGroup = connectMaster.NewGroup(frame)
+		proxy.Object = frame
+		proxy.OpenPos = openPos or UDim2.new(0.5, 0, 0.5, 0)
+		proxy.ClosePos = proxy.OpenPos + UDim2.new(0, 0, 1, 0)
+		proxy.OpenBindable = Instance.new("BindableEvent")
+		proxy.CloseBindable = Instance.new("BindableEvent")
+		proxy.LastOpenPos = proxy.OpenPos
+		proxy.Locked = false
+		proxy.TweenInInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		proxy.TweenOutInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		proxy.CurrentTween = nil
+		
+		self.Frames[frame] = proxy
+		setmetatable(proxy, contextFunc)
+		return proxy
+	else
+		warn("Attempted to add duplicate frame to context")
+		return self.Frames[frame]
+	end
+end
+
+function UIHandler:RemoveFromContext(frame)
+	if self.Frames[frame] then
+		self:RemoveDefault(frame)
+		self.Frames[frame] = nil
+	end
+end
+
+function UIHandler:GetOpenFrame()
+	for _, object in pairs(self.Frames) do
+		if object.FrameStatus == "open" or object.FrameStatus == "opening" then
+			return object
+		end
+	end
+	return nil
+end
+
+---------------------------
+--Context frame functions--
+---------------------------
+
+function contextFunc:SetPositions(open, close, update)
+	if typeof(open) == "UDim2" and typeof(close) == "UDim2" then
+		self.OpenPos = open
+		self.ClosePos = close or (open + UDim2.new(0, 0, 1, 0))
+		if update then
+			if self.FrameStatus == "open" or self.FrameStatus == "opening" then
+				self:Open()
+			else
+				self:Close()
+			end
+		end
+	else
+		warn("Invalid value type")
+	end
+end
+
+function contextFunc:SetStyle(length, easingStyle)
+	if type(length) == "number" and typeof(easingStyle) == "Enum" then
+		self.tweenInInfo = TweenInfo.new(length, (easingStyle or Enum.EasingStyle.Quad), Enum.EasingDirection.In)
+		self.tweenOutInfo = TweenInfo.new(length, (easingStyle or Enum.EasingStyle.Quad), Enum.EasingDirection.Out)
+	end
+end
+
+function contextFunc:Bind(openButton, closeButton)
+	if not closeButton then
+		self.connectionGroup:AddConnection(openButton.MouseButton1Click:Connect(function()
+			self:Handle()
+		end))
+	else
+		self.connectionGroup:AddConnection(openButton.MouseButton1Click:Connect(function()
+			self:Open()
+		end))
+		self.connectionGroup:AddConnection(closeButton.MouseButton1Click:Connect(function()
+			self:Close()
+		end))
+	end
+end
+
+function contextFunc:Unbind()
+	self.connectionGroup:Disconnect()
+end
+
+function contextFunc:BindFunction(reference, funcToBind, framePos)
+	local funcConnect = connectMaster.NewGroup(reference..self.Object.Name)
+	if string.lower(framePos) == "open" then
+		funcConnect:AddConnection(self.OpenBindable.Event:Connect(function()
+			funcToBind()
+		end))
+	else
+		funcConnect:AddConnection(self.CloseBindable.Event:Connect(function()
+			funcToBind()
+		end))
+	end
+end
+
+function contextFunc:UnbindFunction(reference)
+	local foundGroup = connectMaster:GetGroupByIdentifier(reference..self.Object.Name)
+	if foundGroup then
+		foundGroup:Destroy()
+	end
+end
+
+function contextFunc:Lock()
+	self.Locked = true
+end
+
+function contextFunc:Unlock()
+	self.Locked = false
+end
+
+function contextFunc:Close()
+	if self.FrameStatus == "opening" then
+		self.CurrentTween:Cancel()
+	elseif self.FrameStatus ~= "closed" or self.FrameStatus ~= "closing" then
+		local tween = tweenService:Create(self.Object, self.TweenInInfo, {Position = self.ClosePos})
+		self.CurrentTween = tween
+		self.FrameStatus = "closing"
+		tween:Play()
+		spawn(function()
+			tween.Completed:Wait()
+			tween:Destroy()
+			self.FrameStatus = "closed"
+		end)
+	end
+end
+
+function contextFunc:Open()
+	local openFrame = self.Context:GetOpenFrame()
+	if openFrame ~= self or self.OpenPos ~= self.LastOpenPos then
+		self.LastOpenPos = self.OpenPos
+		if openFrame then
+			if openFrame.Locked then
+				return
+			else
+				openFrame:Close()
+			end
+		end
+		local tween = tweenService:Create(self.Object, self.TweenOutInfo, {Position = self.OpenPos})
+		self.CurrentTween = tween
+		self.FrameStatus = "opening"
+		tween:Play()
+		spawn(function()
+			tween.Completed:Wait()
+			tween:Destroy()
+			self.FrameStatus = "open"
+		end)
+	end
+end
+
+function contextFunc:Handle()
+	if self.Context:GetOpenFrame() == self then
+		self:Close()
+	else
+		self:Open()
+	end
+end
+
+return UIHandler
